@@ -1,16 +1,16 @@
 ---
-name: hasown
-version: 2.0.3
+name: side-channel-map
+version: 1.0.1
 type: npm
-summary: A robust, ES3 compatible, "has own property" predicate.
-homepage: https://github.com/inspect-js/hasOwn#readme
+summary: Store information about any JS value in a side channel, using a Map
+homepage: https://github.com/ljharb/side-channel-map#readme
 license: mit
 licenses:
 - sources: LICENSE
   text: |
     MIT License
 
-    Copyright (c) Jordan Harband and contributors
+    Copyright (c) 2024 Jordan Harband
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal

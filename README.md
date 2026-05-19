@@ -56,13 +56,18 @@ To pin the exact version:
 ```
 
 The action queries the GitHub API to fetch releases data, to avoid rate limiting,
-pass the default token with the `repo-token` variable:
+it uses the default `GITHUB_TOKEN` secret. Exact versions are downloaded directly
+without querying the releases API.
+
+If the default
+[permissions for the GitHub token](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#permissions-for-the-github_token)
+are not sufficient, you can provide a custom GitHub token with the necessary permissions:
 
 ```yaml
 - name: Install Protoc
   uses: arduino/setup-protoc@v3
   with:
-    repo-token: ${{ secrets.GITHUB_TOKEN }}
+    repo-token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
 ```
 
 ## Enable verbose logging for a pipeline

@@ -4,20 +4,20 @@ author: 'Arduino'
 inputs:
   version:
     description: 'Version to use. Example: 26.2'
-    default: '26.x'
+    default: 'latest'
   include-pre-releases:
     description: 'Include github pre-releases in latest version calculation'
     default: 'false'
   repo-token:
     description: 'GitHub repo token to use to avoid rate limiter'
-    default: ''
+    default: ${{ github.token }}
 outputs:
   version:
     description: 'Actual version of the protoc compiler environment that has been installed'
   path:
     description: 'Path to where the protoc compiler has been installed'
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
 branding:
   icon: 'box'

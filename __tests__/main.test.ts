@@ -1,4 +1,3 @@
-import * as io from "@actions/io";
 import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
@@ -14,6 +13,14 @@ process.env.RUNNER_TEMP = tempDir;
 process.env.RUNNER_TOOL_CACHE = toolDir;
 import * as installer from "../src/installer";
 
+function mockReleasePages() {
+  for (let pageNum = 1; pageNum <= 6; pageNum++) {
+    nock("https://api.github.com")
+      .get(`/repos/protocolbuffers/protobuf/releases?page=${pageNum}`)
+      .replyWithFile(200, path.join(dataDir, `releases-${pageNum}.json`));
+  }
+}
+
 describe("filename tests", () => {
   const tests = [
     ["protoc-23.2-linux-x86_32.zip", "linux", ""],
@@ -24,6 +31,7 @@ describe("filename tests", () => {
     ["protoc-23.2-osx-aarch_64.zip", "darwin", "arm64"],
     ["protoc-23.2-osx-x86_64.zip", "darwin", "x64"],
     ["protoc-23.2-win64.zip", "win32", "x64"],
+    ["protoc-23.2-win64.zip", "win32", "arm64"],
     ["protoc-23.2-win32.zip", "win32", "x32"],
   ];
   it(`Downloads all expected versions correctly`, () => {
@@ -34,18 +42,84 @@ describe("filename tests", () => {
   });
 });
 
+describe("archive extraction tests", () => {
+  it("Adds zip extension for Windows extraction", () => {
+    expect(installer.zipPathForExtraction("C:\\temp\\archive", "win32")).toBe(
+      "C:\\temp\\archive.zip",
+    );
+  });
+
+  it("Leaves existing zip path unchanged", () => {
+    expect(
+      installer.zipPathForExtraction("C:\\temp\\archive.zip", "win32"),
+    ).toBe("C:\\temp\\archive.zip");
+  });
+
+  it("Leaves non-Windows path unchanged", () => {
+    expect(installer.zipPathForExtraction("/tmp/archive", "linux")).toBe(
+      "/tmp/archive",
+    );
+  });
+});
+
+describe("version resolver tests", () => {
+  afterEach(() => {
+    nock.cleanAll();
+    nock.enableNetConnect();
+  });
+
+  it("Uses exact three-part versions without querying releases", async () => {
+    nock.disableNetConnect();
+
+    await expect(installer.computeVersion("v3.20.3", false, "")).resolves.toBe(
+      "v3.20.3",
+    );
+  });
+
+  it("Resolves latest stable version", async () => {
+    mockReleasePages();
+
+    await expect(installer.computeVersion("latest", false, "")).resolves.toBe(
+      "v23.1",
+    );
+  });
+
+  it("Resolves legacy patch versions from prefix", async () => {
+    mockReleasePages();
+
+    await expect(installer.computeVersion("v3.20", false, "")).resolves.toBe(
+      "v3.20.3",
+    );
+  });
+
+  it("Retries anonymously when the token is rejected", async () => {
+    nock("https://api.github.com", {
+      reqheaders: {
+        authorization: "Bearer bad-token",
+      },
+    })
+      .get("/repos/protocolbuffers/protobuf/releases?page=1")
+      .reply(401, { message: "Bad credentials" });
+    mockReleasePages();
+
+    await expect(
+      installer.computeVersion("latest", false, "bad-token"),
+    ).resolves.toBe("v23.1");
+  });
+});
+
 describe("installer tests", () => {
   beforeEach(async function () {
-    await io.rmRF(toolDir);
-    await io.rmRF(tempDir);
-    await io.mkdirP(toolDir);
-    await io.mkdirP(tempDir);
+    await fs.promises.rm(toolDir, { force: true, recursive: true });
+    await fs.promises.rm(tempDir, { force: true, recursive: true });
+    await fs.promises.mkdir(toolDir, { recursive: true });
+    await fs.promises.mkdir(tempDir, { recursive: true });
   });
 
   afterAll(async () => {
     try {
-      await io.rmRF(toolDir);
-      await io.rmRF(tempDir);
+      await fs.promises.rm(toolDir, { force: true, recursive: true });
+      await fs.promises.rm(tempDir, { force: true, recursive: true });
     } catch {
       console.log("Failed to remove test directories");
     }
@@ -68,29 +142,7 @@ describe("installer tests", () => {
 
   describe("Gets the latest release of protoc", () => {
     beforeEach(() => {
-      nock("https://api.github.com")
-        .get("/repos/protocolbuffers/protobuf/releases?page=1")
-        .replyWithFile(200, path.join(dataDir, "releases-1.json"));
-
-      nock("https://api.github.com")
-        .get("/repos/protocolbuffers/protobuf/releases?page=2")
-        .replyWithFile(200, path.join(dataDir, "releases-2.json"));
-
-      nock("https://api.github.com")
-        .get("/repos/protocolbuffers/protobuf/releases?page=3")
-        .replyWithFile(200, path.join(dataDir, "releases-3.json"));
-
-      nock("https://api.github.com")
-        .get("/repos/protocolbuffers/protobuf/releases?page=4")
-        .replyWithFile(200, path.join(dataDir, "releases-4.json"));
-
-      nock("https://api.github.com")
-        .get("/repos/protocolbuffers/protobuf/releases?page=5")
-        .replyWithFile(200, path.join(dataDir, "releases-5.json"));
-
-      nock("https://api.github.com")
-        .get("/repos/protocolbuffers/protobuf/releases?page=6")
-        .replyWithFile(200, path.join(dataDir, "releases-6.json"));
+      mockReleasePages();
     });
 
     afterEach(() => {

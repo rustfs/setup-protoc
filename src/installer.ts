@@ -4,6 +4,7 @@ let tempDirectory = process.env.RUNNER_TEMP || "";
 import * as os from "os";
 import * as path from "path";
 import * as util from "util";
+import * as fs from "fs";
 import * as restm from "typed-rest-client/RestClient";
 import * as semver from "semver";
 
@@ -27,10 +28,6 @@ import * as tc from "@actions/tool-cache";
 
 const osPlat: string = os.platform();
 const osArch: string = os.arch();
-
-// This regex is slighty modified from https://semver.org/ to allow only MINOR.PATCH notation.
-const semverRegex =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/gm;
 
 interface IProtocRelease {
   tag_name: string;
@@ -95,7 +92,8 @@ async function downloadRelease(version: string): Promise<string> {
   }
 
   // Extract
-  const extPath: string = await tc.extractZip(downloadPath);
+  const extractPath = await prepareZipForExtraction(downloadPath);
+  const extPath: string = await tc.extractZip(extractPath);
 
   // Install into the local tool cache - node extracts with a root folder that matches the fileName downloaded
   return tc.cacheDir(extPath, "protoc", version);
@@ -154,7 +152,7 @@ export function getFileName(
 
   // The name of the Windows package has a different naming pattern
   if (osPlatf == "win32") {
-    const arch: string = osArc == "x64" ? "64" : "32";
+    const arch: string = osArc == "x64" || osArc == "arm64" ? "64" : "32";
     return util.format("protoc-%s-win%s.zip", version, arch);
   }
 
@@ -169,6 +167,24 @@ export function getFileName(
 
 // Retrieve a list of versions scraping tags from the Github API
 async function fetchVersions(
+  includePreReleases: boolean,
+  repoToken: string,
+): Promise<string[]> {
+  try {
+    return await fetchVersionsFromApi(includePreReleases, repoToken);
+  } catch (error) {
+    if (repoToken != "" && isBadCredentialsError(error)) {
+      core.warning(
+        "GitHub token was rejected by api.github.com; retrying without token",
+      );
+      return fetchVersionsFromApi(includePreReleases, "");
+    }
+
+    throw error;
+  }
+}
+
+async function fetchVersionsFromApi(
   includePreReleases: boolean,
   repoToken: string,
 ): Promise<string[]> {
@@ -187,6 +203,9 @@ async function fetchVersions(
       "https://api.github.com/repos/protocolbuffers/protobuf/releases?page=" +
         pageNum,
     );
+    if (p.statusCode != null && (p.statusCode < 200 || p.statusCode >= 300)) {
+      throw new Error(`GitHub releases API returned HTTP ${p.statusCode}`);
+    }
     const nextPage: IProtocRelease[] = p.result || [];
     if (nextPage.length > 0) {
       tags = tags.concat(nextPage);
@@ -202,14 +221,24 @@ async function fetchVersions(
 }
 
 // Compute an actual version starting from the `version` configuration param.
-async function computeVersion(
+export async function computeVersion(
   version: string,
   includePreReleases: boolean,
   repoToken: string,
 ): Promise<string> {
+  const requestedVersion = version;
+
   // strip leading `v` char (will be re-added later)
   if (version.startsWith("v")) {
     version = version.slice(1, version.length);
+  }
+
+  if (isExactVersion(version)) {
+    return "v" + version;
+  }
+
+  if (version.toLowerCase() == "latest") {
+    version = "";
   }
 
   // strip trailing .x chars
@@ -218,8 +247,10 @@ async function computeVersion(
   }
 
   const allVersions = await fetchVersions(includePreReleases, repoToken);
-  const validVersions = allVersions.filter((v) => v.match(semverRegex));
-  const possibleVersions = validVersions.filter((v) => v.startsWith(version));
+  const validVersions = allVersions.filter((v) => isValidVersion(v));
+  const possibleVersions = validVersions.filter((v) =>
+    matchesVersionPrefix(v, version),
+  );
 
   const versionMap = new Map();
   possibleVersions.forEach((v) => versionMap.set(normalizeVersion(v), v));
@@ -231,12 +262,73 @@ async function computeVersion(
   core.debug(`evaluating ${versions.length} versions`);
 
   if (versions.length === 0) {
-    throw new Error("unable to get latest version");
+    throw new Error(`unable to get latest version for ${requestedVersion}`);
   }
 
   core.debug(`matched: ${versions[0]}`);
 
   return "v" + versions[0];
+}
+
+function isExactVersion(version: string): boolean {
+  if (
+    version == "" ||
+    version.toLowerCase() == "latest" ||
+    version.endsWith(".x")
+  ) {
+    return false;
+  }
+
+  const versionParts = version.split(".");
+  const majorVersion = Number(versionParts[0]);
+  if (!Number.isInteger(majorVersion)) {
+    return false;
+  }
+
+  return (
+    isValidVersion(version) &&
+    (versionParts.length >= 3 ||
+      (versionParts.length == 2 && majorVersion >= 21))
+  );
+}
+
+function isValidVersion(version: string): boolean {
+  return semver.valid(normalizeVersion(version)) != null;
+}
+
+function matchesVersionPrefix(version: string, prefix: string): boolean {
+  return (
+    prefix == "" ||
+    version == prefix ||
+    version.startsWith(prefix + ".") ||
+    version.startsWith(prefix + "-")
+  );
+}
+
+function isBadCredentialsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : `${error}`;
+
+  return message.includes("Bad credentials") || message.includes("HTTP 401");
+}
+
+async function prepareZipForExtraction(downloadPath: string): Promise<string> {
+  const extractPath = zipPathForExtraction(downloadPath, osPlat);
+  if (extractPath != downloadPath) {
+    await fs.promises.rename(downloadPath, extractPath);
+  }
+
+  return extractPath;
+}
+
+export function zipPathForExtraction(
+  downloadPath: string,
+  osPlatf: string,
+): string {
+  if (osPlatf == "win32" && !downloadPath.toLowerCase().endsWith(".zip")) {
+    return `${downloadPath}.zip`;
+  }
+
+  return downloadPath;
 }
 
 // Make partial versions semver compliant.
